@@ -15,7 +15,7 @@
 
     <properties>
         <quarkus.version>${global.quarkus.version}</quarkus.version>
-        <final.name>${final.name}</final.name>
+        <final.name>quarkus-json-test</final.name>
     </properties>
 
     <dependencyManagement>
