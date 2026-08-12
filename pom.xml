@@ -99,6 +99,7 @@
                 <module>apps/quarkus-picocli-sbom</module>
                 <module>apps/quarkus-vertx</module>
                 <module>apps/random-numbers</module>
+                <module>apps/tls-hybrid-kem</module>
                 <module>apps/recordannotations</module>
                 <module>apps/reslocations</module>
                 <module>apps/timezones</module>

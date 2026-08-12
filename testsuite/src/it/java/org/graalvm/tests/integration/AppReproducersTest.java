@@ -915,6 +915,57 @@ public class AppReproducersTest {
         }
     }
 
+    /**
+     * Verifies that the PQC group X25519MLKEM768
+     * is registered and reachable in native image.
+     * Verifies that a TLS 1.3 handshake using that group succeeds end-to-end.
+     */
+    @Test
+    @IfMandrelVersion(min = "25.0.5")
+    public void tlsHybridKemTest(TestInfo testInfo) throws IOException, InterruptedException {
+        final Apps app = Apps.TLS_HYBRID_KEM;
+        LOGGER.info("Testing app: " + app);
+        Process process = null;
+        File processLog = null;
+        final StringBuilder report = new StringBuilder();
+        final File appDir = Path.of(BASE_DIR, app.dir).toFile();
+        final String cn = testInfo.getTestClass().get().getCanonicalName();
+        final String mn = testInfo.getTestMethod().get().getName();
+        try {
+            cleanTarget(app);
+            Files.createDirectories(Paths.get(appDir.getAbsolutePath() + File.separator + "logs"));
+            processLog = Path.of(appDir.getAbsolutePath(), "logs", "build-and-run.log").toFile();
+            builderRoutine(app, report, cn, mn, appDir, processLog);
+            LOGGER.info("Running on JVM...");
+            List<String> cmd = getRunCommand(app.buildAndRunCmds.runCommands[0]);
+            process = runCommand(cmd, appDir, processLog, app);
+            assertNotNull(process, "JVM run failed to start. Check " + getLogsDir(cn, mn) + File.separator + processLog.getName());
+            process.waitFor(10, TimeUnit.SECONDS);
+            Logs.appendln(report, appDir.getAbsolutePath());
+            Logs.appendlnSection(report, String.join(" ", cmd));
+            final Pattern pass = Pattern.compile(".*Test passed\\..*");
+            assertTrue(searchLogLines(pass, processLog, Charset.defaultCharset()),
+                    "JVM run: 'Test passed.' not found. Check " + getLogsDir(cn, mn) + File.separator + processLog.getName());
+            processStopper(process, false);
+            LOGGER.info("Running native image...");
+            cmd = getRunCommand(app.buildAndRunCmds.runCommands[1]);
+            process = runCommand(cmd, appDir, processLog, app);
+            assertNotNull(process, "Native run failed to start. Check " + getLogsDir(cn, mn) + File.separator + processLog.getName());
+            process.waitFor(10, TimeUnit.SECONDS);
+            Logs.appendln(report, appDir.getAbsolutePath());
+            Logs.appendlnSection(report, String.join(" ", cmd));
+
+            assertTrue(searchLogLines(pass, processLog, Charset.defaultCharset()),
+                    "Native run: 'Test passed.' not found. Check " + getLogsDir(cn, mn) + File.separator + processLog.getName());
+            processStopper(process, false);
+
+            Logs.checkLog(cn, mn, app, processLog);
+        } finally {
+            cleanDirOrFile(appDir.getAbsolutePath() + File.separator + "server.p12");
+            cleanup(process, cn, mn, report, app, processLog);
+        }
+    }
+
     @Test
     @Tag("builder-image")
     @IfMandrelVersion(min = "23.1.8", max = "23.1.999", inContainer = true)

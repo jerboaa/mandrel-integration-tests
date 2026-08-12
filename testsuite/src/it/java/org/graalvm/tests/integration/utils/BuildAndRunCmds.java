@@ -29,8 +29,8 @@ import static org.graalvm.tests.integration.AppReproducersTest.RUNTIME_IMAGE_BAS
 import static org.graalvm.tests.integration.JFRTest.JFR_FLIGHT_RECORDER_HOTSPOT_TOKEN;
 import static org.graalvm.tests.integration.JFRTest.JFR_MONITORING_SWITCH_TOKEN;
 import static org.graalvm.tests.integration.PerfCheckTest.FINAL_NAME_TOKEN;
-import static org.graalvm.tests.integration.PerfCheckTest.MX_HEAP_MB;
 import static org.graalvm.tests.integration.PerfCheckTest.GC_HEAP_MB;
+import static org.graalvm.tests.integration.PerfCheckTest.MX_HEAP_MB;
 import static org.graalvm.tests.integration.PerfCheckTest.NATIVE_IMAGE_XMX_GB;
 import static org.graalvm.tests.integration.utils.AuxiliaryOptions.DebugCodeInfoUseSourceMappings_23_0;
 import static org.graalvm.tests.integration.utils.AuxiliaryOptions.ForeignAPISupport_24_2;
@@ -607,6 +607,22 @@ public enum BuildAndRunCmds {
                             "16686:16686", "-p", "14268:14268", "--name", "quarkus_jaeger", "quay.io/jaegertracing/all-in-one:latest"
                     }
             }
+    ),
+    TLS_HYBRID_KEM(
+            new String[][] {
+                    { "keytool", "-genkeypair", "-keyalg", "EC", "-groupname", "secp256r1",
+                            "-validity", "365", "-keystore", "server.p12", "-storetype", "pkcs12",
+                            "-storepass", "password", "-dname", "CN=localhost" },
+                    { "mvn", "--batch-mode", "package" },
+                    { "native-image", "-ea", "-march=native", "--no-fallback", "--link-at-build-time",
+                            "-jar", "target/tls-hybrid-kem.jar", "target/tls-hybrid-kem" } },
+            new String[][] {
+                    { "java", "-Djavax.net.ssl.keyStore=server.p12",
+                            "-Djavax.net.ssl.keyStorePassword=password",
+                            "-jar", "target/tls-hybrid-kem.jar" },
+                    { IS_THIS_WINDOWS ? "target\\tls-hybrid-kem.exe" : "./target/tls-hybrid-kem",
+                            "-Djavax.net.ssl.keyStore=server.p12",
+                            "-Djavax.net.ssl.keyStorePassword=password" } }
     ),
     VTHREADS_PROPS(
             new String[][] {
