@@ -915,15 +915,25 @@ public class AppReproducersTest {
         }
     }
 
+    @Test
+    @Tag("builder-image")
+    @IfMandrelVersion(min = "25.0.5", inContainer = true)
+    public void tlsHybridKemContainerTest(TestInfo testInfo) throws IOException, InterruptedException {
+        tlsHybridKem(testInfo, Apps.TLS_HYBRID_KEM_BUILDER_IMAGE);
+    }
+
+    @Test
+    @IfMandrelVersion(min = "25.0.5")
+    public void tlsHybridKemTest(TestInfo testInfo) throws IOException, InterruptedException {
+        tlsHybridKem(testInfo, Apps.TLS_HYBRID_KEM);
+    }
+
     /**
      * Verifies that the PQC group X25519MLKEM768
      * is registered and reachable in native image.
      * Verifies that a TLS 1.3 handshake using that group succeeds end-to-end.
      */
-    @Test
-    @IfMandrelVersion(min = "25.0.5")
-    public void tlsHybridKemTest(TestInfo testInfo) throws IOException, InterruptedException {
-        final Apps app = Apps.TLS_HYBRID_KEM;
+    public void tlsHybridKem(TestInfo testInfo, Apps app) throws IOException, InterruptedException {
         LOGGER.info("Testing app: " + app);
         Process process = null;
         File processLog = null;
@@ -931,38 +941,83 @@ public class AppReproducersTest {
         final File appDir = Path.of(BASE_DIR, app.dir).toFile();
         final String cn = testInfo.getTestClass().get().getCanonicalName();
         final String mn = testInfo.getTestMethod().get().getName();
+        final boolean inContainer = app.runtimeContainer != ContainerNames.NONE;
+        final Pattern pass = Pattern.compile(".*Test passed\\..*");
         try {
             cleanTarget(app);
+            if (inContainer) {
+                for (String base : RUNTIME_IMAGE_BASE) {
+                    removeContainer(app.runtimeContainer.name + "_" + base);
+                }
+            }
             Files.createDirectories(Paths.get(appDir.getAbsolutePath() + File.separator + "logs"));
             processLog = Path.of(appDir.getAbsolutePath(), "logs", "build-and-run.log").toFile();
             builderRoutine(app, report, cn, mn, appDir, processLog);
-            LOGGER.info("Running on JVM...");
-            List<String> cmd = getRunCommand(app.buildAndRunCmds.runCommands[0]);
-            process = runCommand(cmd, appDir, processLog, app);
-            assertNotNull(process, "JVM run failed to start. Check " + getLogsDir(cn, mn) + File.separator + processLog.getName());
-            process.waitFor(10, TimeUnit.SECONDS);
-            Logs.appendln(report, appDir.getAbsolutePath());
-            Logs.appendlnSection(report, String.join(" ", cmd));
-            final Pattern pass = Pattern.compile(".*Test passed\\..*");
-            assertTrue(searchLogLines(pass, processLog, Charset.defaultCharset()),
-                    "JVM run: 'Test passed.' not found. Check " + getLogsDir(cn, mn) + File.separator + processLog.getName());
-            processStopper(process, false);
-            LOGGER.info("Running native image...");
-            cmd = getRunCommand(app.buildAndRunCmds.runCommands[1]);
-            process = runCommand(cmd, appDir, processLog, app);
-            assertNotNull(process, "Native run failed to start. Check " + getLogsDir(cn, mn) + File.separator + processLog.getName());
-            process.waitFor(10, TimeUnit.SECONDS);
-            Logs.appendln(report, appDir.getAbsolutePath());
-            Logs.appendlnSection(report, String.join(" ", cmd));
-
-            assertTrue(searchLogLines(pass, processLog, Charset.defaultCharset()),
-                    "Native run: 'Test passed.' not found. Check " + getLogsDir(cn, mn) + File.separator + processLog.getName());
-            processStopper(process, false);
-
+            if (inContainer) {
+                final Map<String, String> errors = new HashMap<>();
+                for (String base : RUNTIME_IMAGE_BASE) {
+                    if (isBuilderImageIncompatible(base)) {
+                        LOGGER.info("Skipping " + base + " based runtime image test (glibc too old)");
+                        continue;
+                    }
+                    LOGGER.info("Running with " + base + " runtime image...");
+                    final File baseProcessLog = Path.of(appDir.getAbsolutePath(), "logs", base + "-run.log").toFile();
+                    for (int i = 0; i < app.buildAndRunCmds.runCommands.length; i++) {
+                        final List<String> cmd = replaceSwitchesInCmd(getRunCommand(app.buildAndRunCmds.runCommands[i]),
+                                Map.of(RUNTIME_IMAGE_BASE_TOKEN, base));
+                        process = runCommand(cmd, appDir, baseProcessLog, app);
+                        assertNotNull(process, base + ": Container failed. Check " + getLogsDir(cn, mn) + File.separator + baseProcessLog.getName());
+                        process.waitFor(10, TimeUnit.MINUTES); // Potentially downloading base image
+                        Logs.appendln(report, appDir.getAbsolutePath());
+                        Logs.appendlnSection(report, String.join(" ", cmd));
+                    }
+                    if (!searchLogLines(pass, baseProcessLog, Charset.defaultCharset())) {
+                        errors.put(base, "Expected pattern " + pass + " was not found in the log. Check " + getLogsDir(cn, mn) + File.separator + baseProcessLog.getName());
+                    }
+                }
+                assertTrue(errors.isEmpty(), "There were errors checking the runtime logs, see:\n" + String.join("\n", errors.values()));
+            } else {
+                LOGGER.info("Running on JVM...");
+                List<String> cmd = getRunCommand(app.buildAndRunCmds.runCommands[0]);
+                process = runCommand(cmd, appDir, processLog, app);
+                assertNotNull(process, "JVM run failed to start. Check " + getLogsDir(cn, mn) + File.separator + processLog.getName());
+                process.waitFor(10, TimeUnit.SECONDS);
+                Logs.appendln(report, appDir.getAbsolutePath());
+                Logs.appendlnSection(report, String.join(" ", cmd));
+                assertTrue(searchLogLines(pass, processLog, Charset.defaultCharset()),
+                        "JVM run: 'Test passed.' not found. Check " + getLogsDir(cn, mn) + File.separator + processLog.getName());
+                processStopper(process, false);
+                LOGGER.info("Running native image...");
+                cmd = getRunCommand(app.buildAndRunCmds.runCommands[1]);
+                process = runCommand(cmd, appDir, processLog, app);
+                assertNotNull(process, "Native run failed to start. Check " + getLogsDir(cn, mn) + File.separator + processLog.getName());
+                process.waitFor(10, TimeUnit.SECONDS);
+                Logs.appendln(report, appDir.getAbsolutePath());
+                Logs.appendlnSection(report, String.join(" ", cmd));
+                assertTrue(searchLogLines(pass, processLog, Charset.defaultCharset()),
+                        "Native run: 'Test passed.' not found. Check " + getLogsDir(cn, mn) + File.separator + processLog.getName());
+                processStopper(process, false);
+            }
             Logs.checkLog(cn, mn, app, processLog);
         } finally {
+            if (inContainer) {
+                Arrays.stream(RUNTIME_IMAGE_BASE)
+                        .filter(base -> !isBuilderImageIncompatible(base))
+                        .map(base -> Path.of(appDir.getAbsolutePath(), "logs", base + "-run.log").toFile()).forEach(f -> {
+                            try {
+                                Logs.archiveLog(cn, mn, f);
+                            } catch (IOException e) {
+                                LOGGER.error("Failed to archive " + f.getName(), e);
+                            }
+                        });
+            }
             cleanDirOrFile(appDir.getAbsolutePath() + File.separator + "server.p12");
             cleanup(process, cn, mn, report, app, processLog);
+            if (inContainer) {
+                for (String base : RUNTIME_IMAGE_BASE) {
+                    removeContainer(app.runtimeContainer.name + "_" + base);
+                }
+            }
         }
     }
 

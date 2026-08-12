@@ -8,6 +8,8 @@ import javax.net.ssl.SSLSocket;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.InetAddress;
+import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.security.KeyStore;
 import java.util.Arrays;
 import java.util.List;
@@ -80,7 +82,7 @@ public class Main {
                     conn.getOutputStream().flush();
                     negotiatedProtocol[0] = conn.getSession().getProtocol();
                     negotiatedCipher[0] = conn.getSession().getCipherSuite();
-                    System.out.println(Arrays.toString(buf));
+                    System.out.println(new String(buf, StandardCharsets.US_ASCII));
                 }
             } catch (Exception e) {
                 serverError[0] = e;
