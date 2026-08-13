@@ -32,6 +32,7 @@ import static org.graalvm.tests.integration.utils.Commands.ARCH;
 import static org.graalvm.tests.integration.utils.Commands.BUILDER_IMAGE;
 import static org.graalvm.tests.integration.utils.Commands.DOCKER_GHA_BUILDX;
 import static org.graalvm.tests.integration.utils.Commands.DOCKER_GHA_SUMMARY_NAME;
+import static org.graalvm.tests.integration.utils.Commands.appendFileToFile;
 import static org.graalvm.tests.integration.utils.Commands.builderRoutine;
 import static org.graalvm.tests.integration.utils.Commands.cleanDirOrFile;
 import static org.graalvm.tests.integration.utils.Commands.cleanTarget;
@@ -936,13 +937,17 @@ public class AppReproducersTest {
     public void tlsHybridKem(TestInfo testInfo, Apps app) throws IOException, InterruptedException {
         LOGGER.info("Testing app: " + app);
         Process process = null;
-        File processLog = null;
         final StringBuilder report = new StringBuilder();
         final File appDir = Path.of(BASE_DIR, app.dir).toFile();
         final String cn = testInfo.getTestClass().get().getCanonicalName();
         final String mn = testInfo.getTestMethod().get().getName();
         final boolean inContainer = app.runtimeContainer != ContainerNames.NONE;
-        final Pattern pass = Pattern.compile(".*Test passed\\..*");
+        final Pattern completed = Pattern.compile(".*Test passed\\.\\s*$");
+        final Pattern kemUsed = Pattern.compile("\\s*\"named group\"\\s*:\\s*X25519MLKEM768\\s*$");
+        final File processLog = Path.of(appDir.getAbsolutePath(), "logs", "build-and-run.log").toFile();
+        final File jvmRunLog = Path.of(appDir.getAbsolutePath(), "logs", "jvm-run.log").toFile();
+        final File nativeRunLog = Path.of(appDir.getAbsolutePath(), "logs", "native-run.log").toFile();
+        final String failLogMsg = "Expected patterns " + completed + " and " + kemUsed + " not found in the log. Check ";
         try {
             cleanTarget(app);
             if (inContainer) {
@@ -951,7 +956,6 @@ public class AppReproducersTest {
                 }
             }
             Files.createDirectories(Paths.get(appDir.getAbsolutePath() + File.separator + "logs"));
-            processLog = Path.of(appDir.getAbsolutePath(), "logs", "build-and-run.log").toFile();
             builderRoutine(app, report, cn, mn, appDir, processLog);
             if (inContainer) {
                 final Map<String, String> errors = new HashMap<>();
@@ -971,32 +975,35 @@ public class AppReproducersTest {
                         Logs.appendln(report, appDir.getAbsolutePath());
                         Logs.appendlnSection(report, String.join(" ", cmd));
                     }
-                    if (!searchLogLines(pass, baseProcessLog, Charset.defaultCharset())) {
-                        errors.put(base, "Expected pattern " + pass + " was not found in the log. Check " + getLogsDir(cn, mn) + File.separator + baseProcessLog.getName());
+                    if (!searchLogLines(baseProcessLog, Charset.defaultCharset(), completed, kemUsed)) {
+                        errors.put(base, failLogMsg + getLogsDir(cn, mn) + File.separator + baseProcessLog.getName());
                     }
+                    appendFileToFile(baseProcessLog, processLog);
                 }
                 assertTrue(errors.isEmpty(), "There were errors checking the runtime logs, see:\n" + String.join("\n", errors.values()));
             } else {
                 LOGGER.info("Running on JVM...");
                 List<String> cmd = getRunCommand(app.buildAndRunCmds.runCommands[0]);
-                process = runCommand(cmd, appDir, processLog, app);
-                assertNotNull(process, "JVM run failed to start. Check " + getLogsDir(cn, mn) + File.separator + processLog.getName());
+                process = runCommand(cmd, appDir, jvmRunLog, app);
+                assertNotNull(process, "JVM run failed to start. Check " + getLogsDir(cn, mn) + File.separator + jvmRunLog.getName());
                 process.waitFor(10, TimeUnit.SECONDS);
                 Logs.appendln(report, appDir.getAbsolutePath());
                 Logs.appendlnSection(report, String.join(" ", cmd));
-                assertTrue(searchLogLines(pass, processLog, Charset.defaultCharset()),
-                        "JVM run: 'Test passed.' not found. Check " + getLogsDir(cn, mn) + File.separator + processLog.getName());
+                assertTrue(searchLogLines(jvmRunLog, Charset.defaultCharset(), completed, kemUsed),
+                        "JVM run: " + failLogMsg + getLogsDir(cn, mn) + File.separator + jvmRunLog.getName());
                 processStopper(process, false);
+                appendFileToFile(jvmRunLog, processLog);
                 LOGGER.info("Running native image...");
                 cmd = getRunCommand(app.buildAndRunCmds.runCommands[1]);
-                process = runCommand(cmd, appDir, processLog, app);
-                assertNotNull(process, "Native run failed to start. Check " + getLogsDir(cn, mn) + File.separator + processLog.getName());
+                process = runCommand(cmd, appDir, nativeRunLog, app);
+                assertNotNull(process, "Native run failed to start. Check " + getLogsDir(cn, mn) + File.separator + nativeRunLog.getName());
                 process.waitFor(10, TimeUnit.SECONDS);
                 Logs.appendln(report, appDir.getAbsolutePath());
                 Logs.appendlnSection(report, String.join(" ", cmd));
-                assertTrue(searchLogLines(pass, processLog, Charset.defaultCharset()),
-                        "Native run: 'Test passed.' not found. Check " + getLogsDir(cn, mn) + File.separator + processLog.getName());
+                assertTrue(searchLogLines(nativeRunLog, Charset.defaultCharset(), completed, kemUsed),
+                        "Native run: " + failLogMsg + getLogsDir(cn, mn) + File.separator + nativeRunLog.getName());
                 processStopper(process, false);
+                appendFileToFile(nativeRunLog, processLog);
             }
             Logs.checkLog(cn, mn, app, processLog);
         } finally {
@@ -1012,7 +1019,7 @@ public class AppReproducersTest {
                         });
             }
             cleanDirOrFile(appDir.getAbsolutePath() + File.separator + "server.p12");
-            cleanup(process, cn, mn, report, app, processLog);
+            cleanup(process, cn, mn, report, app, processLog, jvmRunLog, nativeRunLog);
             if (inContainer) {
                 for (String base : RUNTIME_IMAGE_BASE) {
                     removeContainer(app.runtimeContainer.name + "_" + base);

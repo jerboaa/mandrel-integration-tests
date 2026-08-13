@@ -98,7 +98,7 @@ public class Main {
                         .createSocket(InetAddress.getLoopbackAddress(), portHolder[0])) {
             final SSLParameters clientParams = clientSocket.getSSLParameters();
             clientParams.setProtocols(new String[] { "TLSv1.3" });
-            clientParams.setNamedGroups(new String[] { "X25519MLKEM768", "x25519", "secp256r1" });
+            clientParams.setNamedGroups(new String[] { "X25519MLKEM768" });
             clientSocket.setSSLParameters(clientParams);
             clientSocket.startHandshake();
             final OutputStream out = clientSocket.getOutputStream();

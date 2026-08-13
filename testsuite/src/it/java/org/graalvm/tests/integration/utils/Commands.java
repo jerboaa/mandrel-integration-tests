@@ -39,6 +39,7 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.net.UnknownHostException;
+import java.nio.channels.FileChannel;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.FileVisitResult;
@@ -835,12 +836,30 @@ public class Commands {
         return -1;
     }
 
-    public static boolean searchLogLines(Pattern p, File processLog, Charset charset) throws IOException {
+    public static boolean searchLogLines(Pattern pattern, File processLog, Charset charset) throws IOException {
+        return searchLogLines(processLog, charset, pattern);
+    }
+
+    public static boolean searchLogLines(File processLog, Charset charset, Pattern... patterns) throws IOException {
+        if (patterns == null || patterns.length == 0) {
+            return true;
+        }
+        final boolean[] found = new boolean[patterns.length];
+        int foundCount = 0;
         try (Scanner sc = new Scanner(processLog, charset)) {
             while (sc.hasNextLine()) {
-                final Matcher m = p.matcher(sc.nextLine());
-                if (m.matches()) {
-                    return true;
+                final String line = sc.nextLine();
+                for (int i = 0; i < patterns.length; i++) {
+                    if (!found[i]) {
+                        final Matcher m = patterns[i].matcher(line);
+                        if (m.matches()) {
+                            found[i] = true;
+                            foundCount++;
+                            if (foundCount == patterns.length) {
+                                return true;
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -1326,5 +1345,19 @@ public class Commands {
             }
         }
         return true;
+    }
+
+    public static void appendFileToFile(File src, File dst) throws IOException {
+        try (FileChannel sourceChannel = FileChannel.open(src.toPath(), StandardOpenOption.READ);
+                FileChannel targetChannel = FileChannel.open(dst.toPath(),
+                        StandardOpenOption.CREATE,
+                        StandardOpenOption.WRITE,
+                        StandardOpenOption.APPEND)) {
+            final long s = sourceChannel.size();
+            long transferred = 0;
+            while (transferred < s) {
+                transferred += sourceChannel.transferTo(transferred, s - transferred, targetChannel);
+            }
+        }
     }
 }

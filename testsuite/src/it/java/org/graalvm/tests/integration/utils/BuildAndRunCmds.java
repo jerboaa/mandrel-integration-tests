@@ -617,12 +617,16 @@ public enum BuildAndRunCmds {
                     { "native-image", "-ea", "-march=native", "--no-fallback", "--link-at-build-time",
                             "-jar", "target/tls-hybrid-kem.jar", "target/tls-hybrid-kem" } },
             new String[][] {
+                    // Tries HotSpot first.
                     { "java", "-Djavax.net.ssl.keyStore=server.p12",
                             "-Djavax.net.ssl.keyStorePassword=password",
+                            "-Djavax.net.debug=ssl,handshake",
                             "-jar", "target/tls-hybrid-kem.jar" },
+                    // Then native.
                     { IS_THIS_WINDOWS ? "target\\tls-hybrid-kem.exe" : "./target/tls-hybrid-kem",
                             "-Djavax.net.ssl.keyStore=server.p12",
-                            "-Djavax.net.ssl.keyStorePassword=password" } }
+                            "-Djavax.net.ssl.keyStorePassword=password",
+                            "-Djavax.net.debug=ssl,handshake" } }
     ),
     TLS_HYBRID_KEM_BUILDER_IMAGE(
             new String[][] {
@@ -657,12 +661,14 @@ public enum BuildAndRunCmds {
                     { CONTAINER_RUNTIME, "build", "--network=host",
                             "-f", BASE_DIR + File.separator + "apps" + File.separator + "vthread_props" + File.separator + "Dockerfile." + RUNTIME_IMAGE_BASE_TOKEN,
                             "-t", ContainerNames.TLS_HYBRID_KEM_BUILDER_IMAGE.name + "_" + RUNTIME_IMAGE_BASE_TOKEN, "." },
+                    // We don't bother running HotSpot mode in container, just native.
                     { CONTAINER_RUNTIME, "run", IS_THIS_WINDOWS ? "" : "-u", IS_THIS_WINDOWS ? "" : getUnixUIDGID(),
                             "-t", "-v", BASE_DIR + File.separator + "apps" + File.separator + "tls-hybrid-kem:/work:z",
                             ContainerNames.TLS_HYBRID_KEM_BUILDER_IMAGE.name + "_" + RUNTIME_IMAGE_BASE_TOKEN,
                             "/work/target/tls-hybrid-kem",
                             "-Djavax.net.ssl.keyStore=server.p12",
-                            "-Djavax.net.ssl.keyStorePassword=password" } }
+                            "-Djavax.net.ssl.keyStorePassword=password",
+                            "-Djavax.net.debug=ssl,handshake" } }
     ),
     VTHREADS_PROPS(
             new String[][] {
