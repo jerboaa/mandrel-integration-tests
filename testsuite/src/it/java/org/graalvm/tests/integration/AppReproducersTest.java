@@ -942,12 +942,18 @@ public class AppReproducersTest {
         final String cn = testInfo.getTestClass().get().getCanonicalName();
         final String mn = testInfo.getTestMethod().get().getName();
         final boolean inContainer = app.runtimeContainer != ContainerNames.NONE;
-        final Pattern completed = Pattern.compile(".*Test passed\\.\\s*$");
-        final Pattern kemUsed = Pattern.compile("\\s*\"named group\"\\s*:\\s*X25519MLKEM768\\s*$");
+        final Pattern runCompleted = Pattern.compile(".*Test passed\\.\\s*$");
+        final String serverBlockStarts = "Consuming ServerHello handshake message";
+        final Pattern serverKEMused = Pattern.compile("\\s*\"named group\"\\s*:\\s*X25519MLKEM768\\s*$");
+        final Pattern serverTLSused = Pattern.compile("\\s*\"selected version\"\\s*:\\s*\\[TLSv1.3]\\s*$");
+        final String clientBlockStarts = "Consuming ClientHello handshake message";
+        final Pattern clientKEMused = Pattern.compile("\\s*\"named groups\"\\s*:\\s*\\[X25519MLKEM768]\\s*$");
+        final Pattern clientTLSused = Pattern.compile("\\s*\"versions\"\\s*:\\s*\\[TLSv1.3]\\s*$");
         final File processLog = Path.of(appDir.getAbsolutePath(), "logs", "build-and-run.log").toFile();
         final File jvmRunLog = Path.of(appDir.getAbsolutePath(), "logs", "jvm-run.log").toFile();
         final File nativeRunLog = Path.of(appDir.getAbsolutePath(), "logs", "native-run.log").toFile();
-        final String failLogMsg = "Expected patterns " + completed + " and " + kemUsed + " not found in the log. Check ";
+        final String failLogMsgF = "Expected patterns \"%s\" and \"%s\" not found in the log within %d lines after \"%s\" . Check %s";
+        final String failLogMsgEndF = "Pattern \"%s\" not found within %d bytes at the end of %s";
         try {
             cleanTarget(app);
             if (inContainer) {
@@ -975,8 +981,14 @@ public class AppReproducersTest {
                         Logs.appendln(report, appDir.getAbsolutePath());
                         Logs.appendlnSection(report, String.join(" ", cmd));
                     }
-                    if (!searchLogLines(baseProcessLog, Charset.defaultCharset(), completed, kemUsed)) {
-                        errors.put(base, failLogMsg + getLogsDir(cn, mn) + File.separator + baseProcessLog.getName());
+                    if (!searchLogLines(baseProcessLog, 20, Charset.defaultCharset(), runCompleted)) {
+                        errors.put(base, String.format(failLogMsgEndF, runCompleted, 20, getLogsDir(cn, mn) + File.separator + baseProcessLog.getName()));
+                    }
+                    if (!searchLogLines(baseProcessLog, clientBlockStarts, 25, Charset.defaultCharset(), clientKEMused, clientTLSused)) {
+                        errors.put(base, String.format(failLogMsgF, clientKEMused, clientTLSused, 25, clientBlockStarts, getLogsDir(cn, mn) + File.separator + baseProcessLog.getName()));
+                    }
+                    if (!searchLogLines(baseProcessLog, serverBlockStarts, 25, Charset.defaultCharset(), serverKEMused, serverTLSused)) {
+                        errors.put(base, String.format(failLogMsgF, serverKEMused, serverTLSused, 25, serverBlockStarts, getLogsDir(cn, mn) + File.separator + baseProcessLog.getName()));
                     }
                     appendFileToFile(baseProcessLog, processLog);
                 }
@@ -989,8 +1001,12 @@ public class AppReproducersTest {
                 process.waitFor(10, TimeUnit.SECONDS);
                 Logs.appendln(report, appDir.getAbsolutePath());
                 Logs.appendlnSection(report, String.join(" ", cmd));
-                assertTrue(searchLogLines(jvmRunLog, Charset.defaultCharset(), completed, kemUsed),
-                        "JVM run: " + failLogMsg + getLogsDir(cn, mn) + File.separator + jvmRunLog.getName());
+                assertTrue(searchLogLines(jvmRunLog, 20, Charset.defaultCharset(), runCompleted),
+                        "JVM run: " + String.format(failLogMsgEndF, runCompleted, 20, getLogsDir(cn, mn) + File.separator + jvmRunLog.getName()));
+                assertTrue(searchLogLines(jvmRunLog, clientBlockStarts, 25, Charset.defaultCharset(), clientKEMused, clientTLSused),
+                        "JVM run: " + String.format(failLogMsgF, clientKEMused, clientTLSused, 25, clientBlockStarts, getLogsDir(cn, mn) + File.separator + jvmRunLog.getName()));
+                assertTrue(searchLogLines(jvmRunLog, serverBlockStarts, 25, Charset.defaultCharset(), serverKEMused, serverTLSused),
+                        "JVM run: " + String.format(failLogMsgF, serverKEMused, serverTLSused, 25, serverBlockStarts, getLogsDir(cn, mn) + File.separator + jvmRunLog.getName()));
                 processStopper(process, false);
                 appendFileToFile(jvmRunLog, processLog);
                 LOGGER.info("Running native image...");
@@ -1000,8 +1016,12 @@ public class AppReproducersTest {
                 process.waitFor(10, TimeUnit.SECONDS);
                 Logs.appendln(report, appDir.getAbsolutePath());
                 Logs.appendlnSection(report, String.join(" ", cmd));
-                assertTrue(searchLogLines(nativeRunLog, Charset.defaultCharset(), completed, kemUsed),
-                        "Native run: " + failLogMsg + getLogsDir(cn, mn) + File.separator + nativeRunLog.getName());
+                assertTrue(searchLogLines(nativeRunLog, 20, Charset.defaultCharset(), runCompleted),
+                        "Native run: " + String.format(failLogMsgEndF, runCompleted, 20, getLogsDir(cn, mn) + File.separator + nativeRunLog.getName()));
+                assertTrue(searchLogLines(nativeRunLog, clientBlockStarts, 25, Charset.defaultCharset(), clientKEMused, clientTLSused),
+                        "Native run: " + String.format(failLogMsgF, clientKEMused, clientTLSused, 25, clientBlockStarts, getLogsDir(cn, mn) + File.separator + nativeRunLog.getName()));
+                assertTrue(searchLogLines(nativeRunLog, serverBlockStarts, 25, Charset.defaultCharset(), serverKEMused, serverTLSused),
+                        "Native run:  " + String.format(failLogMsgF, serverKEMused, serverTLSused, 25, serverBlockStarts, getLogsDir(cn, mn) + File.separator + nativeRunLog.getName()));
                 processStopper(process, false);
                 appendFileToFile(nativeRunLog, processLog);
             }
