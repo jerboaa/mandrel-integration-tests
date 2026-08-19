@@ -32,6 +32,7 @@ import static org.graalvm.tests.integration.utils.Commands.ARCH;
 import static org.graalvm.tests.integration.utils.Commands.BUILDER_IMAGE;
 import static org.graalvm.tests.integration.utils.Commands.DOCKER_GHA_BUILDX;
 import static org.graalvm.tests.integration.utils.Commands.DOCKER_GHA_SUMMARY_NAME;
+import static org.graalvm.tests.integration.utils.Commands.appendFileToFile;
 import static org.graalvm.tests.integration.utils.Commands.builderRoutine;
 import static org.graalvm.tests.integration.utils.Commands.cleanDirOrFile;
 import static org.graalvm.tests.integration.utils.Commands.cleanTarget;
@@ -916,6 +917,138 @@ public class AppReproducersTest {
                     "Expected pattern " + p2 + " was not found in the log. Check " + getLogsDir(cn, mn) + File.separator + runLog.getName());
         } finally {
             cleanup(process, cn, mn, report, app, buildLog, runLog);
+        }
+    }
+
+    @Test
+    @Tag("builder-image")
+    @IfMandrelVersion(min = "25.0.5", inContainer = true)
+    public void tlsHybridKemContainerTest(TestInfo testInfo) throws IOException, InterruptedException {
+        tlsHybridKem(testInfo, Apps.TLS_HYBRID_KEM_BUILDER_IMAGE);
+    }
+
+    @Test
+    @IfMandrelVersion(min = "25.0.5")
+    public void tlsHybridKemTest(TestInfo testInfo) throws IOException, InterruptedException {
+        tlsHybridKem(testInfo, Apps.TLS_HYBRID_KEM);
+    }
+
+    /**
+     * Verifies that the PQC group X25519MLKEM768
+     * is registered and reachable in native image.
+     * Verifies that a TLS 1.3 handshake using that group succeeds end-to-end.
+     */
+    public void tlsHybridKem(TestInfo testInfo, Apps app) throws IOException, InterruptedException {
+        LOGGER.info("Testing app: " + app);
+        Process process = null;
+        final StringBuilder report = new StringBuilder();
+        final File appDir = Path.of(BASE_DIR, app.dir).toFile();
+        final String cn = testInfo.getTestClass().get().getCanonicalName();
+        final String mn = testInfo.getTestMethod().get().getName();
+        final boolean inContainer = app.runtimeContainer != ContainerNames.NONE;
+        final Pattern runCompleted = Pattern.compile(".*Test passed\\.\\s*$");
+        final String serverBlockStarts = "Consuming ServerHello handshake message";
+        final Pattern serverKEMused = Pattern.compile("\\s*\"named group\"\\s*:\\s*X25519MLKEM768\\s*$");
+        final Pattern serverTLSused = Pattern.compile("\\s*\"selected version\"\\s*:\\s*\\[TLSv1.3]\\s*$");
+        final String clientBlockStarts = "Consuming ClientHello handshake message";
+        final Pattern clientKEMused = Pattern.compile("\\s*\"named groups\"\\s*:\\s*\\[X25519MLKEM768]\\s*$");
+        final Pattern clientTLSused = Pattern.compile("\\s*\"versions\"\\s*:\\s*\\[TLSv1.3]\\s*$");
+        final File processLog = Path.of(appDir.getAbsolutePath(), "logs", "build-and-run.log").toFile();
+        final File jvmRunLog = Path.of(appDir.getAbsolutePath(), "logs", "jvm-run.log").toFile();
+        final File nativeRunLog = Path.of(appDir.getAbsolutePath(), "logs", "native-run.log").toFile();
+        final String failLogMsgF = "Expected patterns \"%s\" and \"%s\" not found in the log within %d lines after \"%s\" . Check %s";
+        final String failLogMsgEndF = "Pattern \"%s\" not found within %d bytes at the end of %s";
+        try {
+            cleanTarget(app);
+            if (inContainer) {
+                for (String base : RUNTIME_IMAGE_BASE) {
+                    removeContainer(app.runtimeContainer.name + "_" + base);
+                }
+            }
+            Files.createDirectories(Paths.get(appDir.getAbsolutePath() + File.separator + "logs"));
+            builderRoutine(app, report, cn, mn, appDir, processLog);
+            if (inContainer) {
+                final Map<String, String> errors = new HashMap<>();
+                for (String base : RUNTIME_IMAGE_BASE) {
+                    if (isBuilderImageIncompatible(base)) {
+                        LOGGER.info("Skipping " + base + " based runtime image test (glibc too old)");
+                        continue;
+                    }
+                    LOGGER.info("Running with " + base + " runtime image...");
+                    final File baseProcessLog = Path.of(appDir.getAbsolutePath(), "logs", base + "-run.log").toFile();
+                    for (int i = 0; i < app.buildAndRunCmds.runCommands.length; i++) {
+                        final List<String> cmd = replaceSwitchesInCmd(getRunCommand(app.buildAndRunCmds.runCommands[i]),
+                                Map.of(RUNTIME_IMAGE_BASE_TOKEN, base));
+                        process = runCommand(cmd, appDir, baseProcessLog, app);
+                        assertNotNull(process, base + ": Container failed. Check " + getLogsDir(cn, mn) + File.separator + baseProcessLog.getName());
+                        process.waitFor(10, TimeUnit.MINUTES); // Potentially downloading base image
+                        Logs.appendln(report, appDir.getAbsolutePath());
+                        Logs.appendlnSection(report, String.join(" ", cmd));
+                    }
+                    if (!searchLogLines(baseProcessLog, 20, Charset.defaultCharset(), runCompleted)) {
+                        errors.put(base, String.format(failLogMsgEndF, runCompleted, 20, getLogsDir(cn, mn) + File.separator + baseProcessLog.getName()));
+                    }
+                    if (!searchLogLines(baseProcessLog, clientBlockStarts, 25, Charset.defaultCharset(), clientKEMused, clientTLSused)) {
+                        errors.put(base, String.format(failLogMsgF, clientKEMused, clientTLSused, 25, clientBlockStarts, getLogsDir(cn, mn) + File.separator + baseProcessLog.getName()));
+                    }
+                    if (!searchLogLines(baseProcessLog, serverBlockStarts, 25, Charset.defaultCharset(), serverKEMused, serverTLSused)) {
+                        errors.put(base, String.format(failLogMsgF, serverKEMused, serverTLSused, 25, serverBlockStarts, getLogsDir(cn, mn) + File.separator + baseProcessLog.getName()));
+                    }
+                    appendFileToFile(baseProcessLog, processLog);
+                }
+                assertTrue(errors.isEmpty(), "There were errors checking the runtime logs, see:\n" + String.join("\n", errors.values()));
+            } else {
+                LOGGER.info("Running on JVM...");
+                List<String> cmd = getRunCommand(app.buildAndRunCmds.runCommands[0]);
+                process = runCommand(cmd, appDir, jvmRunLog, app);
+                assertNotNull(process, "JVM run failed to start. Check " + getLogsDir(cn, mn) + File.separator + jvmRunLog.getName());
+                process.waitFor(10, TimeUnit.SECONDS);
+                Logs.appendln(report, appDir.getAbsolutePath());
+                Logs.appendlnSection(report, String.join(" ", cmd));
+                assertTrue(searchLogLines(jvmRunLog, 20, Charset.defaultCharset(), runCompleted),
+                        "JVM run: " + String.format(failLogMsgEndF, runCompleted, 20, getLogsDir(cn, mn) + File.separator + jvmRunLog.getName()));
+                assertTrue(searchLogLines(jvmRunLog, clientBlockStarts, 25, Charset.defaultCharset(), clientKEMused, clientTLSused),
+                        "JVM run: " + String.format(failLogMsgF, clientKEMused, clientTLSused, 25, clientBlockStarts, getLogsDir(cn, mn) + File.separator + jvmRunLog.getName()));
+                assertTrue(searchLogLines(jvmRunLog, serverBlockStarts, 25, Charset.defaultCharset(), serverKEMused, serverTLSused),
+                        "JVM run: " + String.format(failLogMsgF, serverKEMused, serverTLSused, 25, serverBlockStarts, getLogsDir(cn, mn) + File.separator + jvmRunLog.getName()));
+                processStopper(process, false);
+                appendFileToFile(jvmRunLog, processLog);
+                LOGGER.info("Running native image...");
+                cmd = getRunCommand(app.buildAndRunCmds.runCommands[1]);
+                process = runCommand(cmd, appDir, nativeRunLog, app);
+                assertNotNull(process, "Native run failed to start. Check " + getLogsDir(cn, mn) + File.separator + nativeRunLog.getName());
+                process.waitFor(10, TimeUnit.SECONDS);
+                Logs.appendln(report, appDir.getAbsolutePath());
+                Logs.appendlnSection(report, String.join(" ", cmd));
+                assertTrue(searchLogLines(nativeRunLog, 20, Charset.defaultCharset(), runCompleted),
+                        "Native run: " + String.format(failLogMsgEndF, runCompleted, 20, getLogsDir(cn, mn) + File.separator + nativeRunLog.getName()));
+                assertTrue(searchLogLines(nativeRunLog, clientBlockStarts, 25, Charset.defaultCharset(), clientKEMused, clientTLSused),
+                        "Native run: " + String.format(failLogMsgF, clientKEMused, clientTLSused, 25, clientBlockStarts, getLogsDir(cn, mn) + File.separator + nativeRunLog.getName()));
+                assertTrue(searchLogLines(nativeRunLog, serverBlockStarts, 25, Charset.defaultCharset(), serverKEMused, serverTLSused),
+                        "Native run:  " + String.format(failLogMsgF, serverKEMused, serverTLSused, 25, serverBlockStarts, getLogsDir(cn, mn) + File.separator + nativeRunLog.getName()));
+                processStopper(process, false);
+                appendFileToFile(nativeRunLog, processLog);
+            }
+            Logs.checkLog(cn, mn, app, processLog);
+        } finally {
+            if (inContainer) {
+                Arrays.stream(RUNTIME_IMAGE_BASE)
+                        .filter(base -> !isBuilderImageIncompatible(base))
+                        .map(base -> Path.of(appDir.getAbsolutePath(), "logs", base + "-run.log").toFile()).forEach(f -> {
+                            try {
+                                Logs.archiveLog(cn, mn, f);
+                            } catch (IOException e) {
+                                LOGGER.error("Failed to archive " + f.getName(), e);
+                            }
+                        });
+            }
+            cleanDirOrFile(appDir.getAbsolutePath() + File.separator + "server.p12");
+            cleanup(process, cn, mn, report, app, processLog, jvmRunLog, nativeRunLog);
+            if (inContainer) {
+                for (String base : RUNTIME_IMAGE_BASE) {
+                    removeContainer(app.runtimeContainer.name + "_" + base);
+                }
+            }
         }
     }
 

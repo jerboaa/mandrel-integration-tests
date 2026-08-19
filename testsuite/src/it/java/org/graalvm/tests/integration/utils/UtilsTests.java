@@ -24,13 +24,19 @@ import org.graalvm.tests.integration.utils.versions.UsedVersion;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
+import java.io.File;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.regex.Pattern;
 
 import static org.graalvm.tests.integration.RuntimesSmokeTest.BASE_DIR;
 import static org.graalvm.tests.integration.utils.Commands.parsePerfRecord;
 import static org.graalvm.tests.integration.utils.Commands.parseSerialGCLog;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Testing test suite...
@@ -104,5 +110,50 @@ public class UtilsTests {
                 pr.incrementalGCevents,
                 pr.fullGCevents);
         assertEquals(newLogFormat ? expected_new : expected, actual, "perf tool output parsing method was likely changed without updating the test");
+    }
+
+    @Test
+    public void testSearchLogLinesContextBlocks() throws IOException {
+        final String mockLog = """
+                javax.net.ssl|DEBUG|30|main|2026-08-13 21:03:21.808 CEST|Consuming ServerHello handshake message (
+                  "session id"          : "11111111111111111111111111111111",
+                  "named group": Secp256r1
+                )
+                javax.net.ssl|DEBUG|30|main|2026-08-13 21:03:22.808 CEST|Consuming ServerHello handshake message (
+                  "session id"          : "22222222222222222222222222222222",
+                  "named group": X25519
+                )
+                javax.net.ssl|DEBUG|30|main|2026-08-13 21:03:23.808 CEST|Consuming ServerHello handshake message (
+                  "session id"          : "87A18682D7FA53C939D8D1FC5CF2A8EA75F3E41952D673084781418DE9E885CD",
+                  "named group": X25519MLKEM768
+                )
+                """;
+        final Path tempLog = Files.createTempFile("mock-log", ".log");
+        Files.writeString(tempLog, mockLog, StandardCharsets.UTF_8);
+        final File logFile = tempLog.toFile();
+        final String anchor = "Consuming ServerHello handshake message";
+        final Pattern kemPattern = Pattern.compile(".*\"named group\"\\s*:\\s*X25519MLKEM768\\s*");
+        final Pattern sessionPattern = Pattern.compile(".*\"session id\".*87A18682D7FA53C939D8D1FC5CF2A8EA.*");
+        try {
+            final boolean foundFirst = Commands.searchLogLines(logFile, anchor, 3, 1, StandardCharsets.UTF_8, kemPattern);
+            assertFalse(foundFirst, "Fails when blocksToTry=1 because target is in block 3");
+            final boolean foundThird = Commands.searchLogLines(logFile, anchor, 3, 3, StandardCharsets.UTF_8, kemPattern);
+            assertTrue(foundThird, "Succeeds when blocksToTry=3 because target is in block 3");
+            final boolean foundSecond = Commands.searchLogLines(logFile, anchor, 3, 2, StandardCharsets.UTF_8, kemPattern);
+            assertFalse(foundSecond, "Fails when blocksToTry=2 because target is in block 3");
+            final boolean foundMulti = Commands.searchLogLines(logFile, anchor, 3, 3, StandardCharsets.UTF_8, kemPattern, sessionPattern);
+            assertTrue(foundMulti, "Succeeds finding both patterns in block 3");
+            final Pattern missingPattern = Pattern.compile(".*\"session id\".*MISSING.*");
+            final boolean foundMultiMissing = Commands.searchLogLines(logFile, anchor, 5, 5, StandardCharsets.UTF_8, kemPattern, missingPattern);
+            assertFalse(foundMultiMissing, "Fails when one of the patterns is not in the block");
+            final boolean foundLastBytes = Commands.searchLogLines(logFile, 250, StandardCharsets.UTF_8, kemPattern, sessionPattern);
+            assertTrue(foundLastBytes, "Succeeds finding patterns in the last 250 bytes");
+            final boolean failLastBytes = Commands.searchLogLines(logFile, 50, StandardCharsets.UTF_8, kemPattern, sessionPattern);
+            assertFalse(failLastBytes, "Fails when looking at only the last 50 bytes");
+            final boolean overflowLastBytes = Commands.searchLogLines(logFile, 9999, StandardCharsets.UTF_8, kemPattern);
+            assertTrue(overflowLastBytes, "Succeeds even if bytesAtTheEnd is larger than the file");
+        } finally {
+            Files.deleteIfExists(tempLog);
+        }
     }
 }

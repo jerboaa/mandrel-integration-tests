@@ -683,6 +683,22 @@ public enum WhitelistLogLines {
             return p.toArray(new Pattern[0]);
         }
     },
+    TLS_HYBRID_KEM {
+        @Override
+        public Pattern[] get(boolean inContainer) {
+            final List<Pattern> p = new ArrayList<>();
+            if (UsedVersion.getVersion(inContainer).compareTo(Version.create(25, 0, 0)) >= 0) {
+                p.add(Pattern.compile(".*The build process encountered .* warning.\\..*"));
+                p.add(Pattern.compile(".*Warning: Using a deprecated option --no-fallback from command line\\..*"));
+                p.add(Pattern.compile(".*Warning: Option 'FallbackThreshold' is deprecated and might be removed in a future release:.*"));
+            }
+            // Too much noise, version dependent noise.
+            p.add(Pattern.compile(".*javax.net.ssl\\|WARNING.*"));
+            // Socket closing, irrelevant.
+            p.add(Pattern.compile(".*ssl.TransportContext.warning.*"));
+            return p.toArray(new Pattern[0]);
+        }
+    },
     VTHREADS {
         @Override
         public Pattern[] get(boolean inContainer) {

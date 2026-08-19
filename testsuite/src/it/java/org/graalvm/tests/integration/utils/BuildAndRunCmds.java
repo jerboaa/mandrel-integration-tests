@@ -29,8 +29,8 @@ import static org.graalvm.tests.integration.AppReproducersTest.RUNTIME_IMAGE_BAS
 import static org.graalvm.tests.integration.JFRTest.JFR_FLIGHT_RECORDER_HOTSPOT_TOKEN;
 import static org.graalvm.tests.integration.JFRTest.JFR_MONITORING_SWITCH_TOKEN;
 import static org.graalvm.tests.integration.PerfCheckTest.FINAL_NAME_TOKEN;
-import static org.graalvm.tests.integration.PerfCheckTest.MX_HEAP_MB;
 import static org.graalvm.tests.integration.PerfCheckTest.GC_HEAP_MB;
+import static org.graalvm.tests.integration.PerfCheckTest.MX_HEAP_MB;
 import static org.graalvm.tests.integration.PerfCheckTest.NATIVE_IMAGE_XMX_GB;
 import static org.graalvm.tests.integration.utils.AuxiliaryOptions.DebugCodeInfoUseSourceMappings_23_0;
 import static org.graalvm.tests.integration.utils.AuxiliaryOptions.ForeignAPISupport_24_2;
@@ -607,6 +607,68 @@ public enum BuildAndRunCmds {
                             "16686:16686", "-p", "14268:14268", "--name", "quarkus_jaeger", "quay.io/jaegertracing/all-in-one:latest"
                     }
             }
+    ),
+    TLS_HYBRID_KEM(
+            new String[][] {
+                    { "keytool", "-genkeypair", "-keyalg", "EC", "-groupname", "secp256r1",
+                            "-validity", "365", "-keystore", "server.p12", "-storetype", "pkcs12",
+                            "-storepass", "password", "-dname", "CN=localhost" },
+                    { "mvn", "--batch-mode", "package" },
+                    { "native-image", "-ea", "-march=native", "--no-fallback", "--link-at-build-time",
+                            "-jar", "target/tls-hybrid-kem.jar", "target/tls-hybrid-kem" } },
+            new String[][] {
+                    // Tries HotSpot first.
+                    { "java", "-Djavax.net.ssl.keyStore=server.p12",
+                            "-Djavax.net.ssl.keyStorePassword=password",
+                            "-Djavax.net.debug=ssl,handshake",
+                            "-jar", "target/tls-hybrid-kem.jar" },
+                    // Then native.
+                    { IS_THIS_WINDOWS ? "target\\tls-hybrid-kem.exe" : "./target/tls-hybrid-kem",
+                            "-Djavax.net.ssl.keyStore=server.p12",
+                            "-Djavax.net.ssl.keyStorePassword=password",
+                            "-Djavax.net.debug=ssl,handshake" } }
+    ),
+    TLS_HYBRID_KEM_BUILDER_IMAGE(
+            new String[][] {
+                    { CONTAINER_RUNTIME, "run", IS_THIS_WINDOWS ? "" : "-u", IS_THIS_WINDOWS ? "" : getUnixUIDGID(),
+                            "-t", "--entrypoint", "keytool",
+                            "-v", BASE_DIR + File.separator + "apps" + File.separator + "tls-hybrid-kem:/project:z",
+                            BUILDER_IMAGE,
+                            "-genkeypair", "-keyalg", "EC", "-groupname", "secp256r1",
+                            "-validity", "365", "-keystore", "server.p12", "-storetype", "pkcs12",
+                            "-storepass", "password", "-dname", "CN=localhost" },
+                    // Compile with javac from the builder image (TLS 1.3 + PQC requires JDK 25 for this test)
+                    { CONTAINER_RUNTIME, "run", IS_THIS_WINDOWS ? "" : "-u", IS_THIS_WINDOWS ? "" : getUnixUIDGID(),
+                            "-t", "--entrypoint", "javac",
+                            "-v", BASE_DIR + File.separator + "apps" + File.separator + "tls-hybrid-kem:/project:z",
+                            BUILDER_IMAGE,
+                            "-d", "target/classes",
+                            "src/main/java/tlshybridkem/Main.java" },
+                    { CONTAINER_RUNTIME, "run", IS_THIS_WINDOWS ? "" : "-u", IS_THIS_WINDOWS ? "" : getUnixUIDGID(),
+                            "-t", "--entrypoint", "jar",
+                            "-v", BASE_DIR + File.separator + "apps" + File.separator + "tls-hybrid-kem:/project:z",
+                            BUILDER_IMAGE,
+                            "cfe", "target/tls-hybrid-kem.jar", "tlshybridkem.Main",
+                            "-C", "target/classes", "." },
+                    { CONTAINER_RUNTIME, "run", IS_THIS_WINDOWS ? "" : "-u", IS_THIS_WINDOWS ? "" : getUnixUIDGID(),
+                            "-t", "-v", BASE_DIR + File.separator + "apps" + File.separator + "tls-hybrid-kem:/project:z",
+                            BUILDER_IMAGE,
+                            "-ea", "-march=native", "--no-fallback", "--link-at-build-time",
+                            "-jar", "target/tls-hybrid-kem.jar", "target/tls-hybrid-kem" } },
+            new String[][] {
+                    // Build per base runtime image, Dockerfiles are the same as in vthread_props
+                    // so we just reuse those. Crypto possibly OS sensitive, so we try more runtime images.
+                    { CONTAINER_RUNTIME, "build", "--network=host",
+                            "-f", BASE_DIR + File.separator + "apps" + File.separator + "vthread_props" + File.separator + "Dockerfile." + RUNTIME_IMAGE_BASE_TOKEN,
+                            "-t", ContainerNames.TLS_HYBRID_KEM_BUILDER_IMAGE.name + "_" + RUNTIME_IMAGE_BASE_TOKEN, "." },
+                    // We don't bother running HotSpot mode in container, just native.
+                    { CONTAINER_RUNTIME, "run", IS_THIS_WINDOWS ? "" : "-u", IS_THIS_WINDOWS ? "" : getUnixUIDGID(),
+                            "-t", "-v", BASE_DIR + File.separator + "apps" + File.separator + "tls-hybrid-kem:/work:z",
+                            ContainerNames.TLS_HYBRID_KEM_BUILDER_IMAGE.name + "_" + RUNTIME_IMAGE_BASE_TOKEN,
+                            "/work/target/tls-hybrid-kem",
+                            "-Djavax.net.ssl.keyStore=server.p12",
+                            "-Djavax.net.ssl.keyStorePassword=password",
+                            "-Djavax.net.debug=ssl,handshake" } }
     ),
     VTHREADS_PROPS(
             new String[][] {

@@ -36,6 +36,7 @@ public enum ContainerNames {
     FOR_SERIALIZATION_BUILDER_IMAGE("my-for-serialization-runner"),
     JDK_REFLECTIONS_BUILDER_IMAGE("my-jdkreflections-runner"),
     QUARKUS_BUILDER_IMAGE_MP_ORM_DBS_AWT("my-quarkus-mp-orm-dbs-awt-container"),
+    TLS_HYBRID_KEM_BUILDER_IMAGE("my-tls-hybrid-kem-runner"),
     VTHREADS_PROPS_BUILDER_IMAGE("my-vthreads-props-runner"),
     QUARKUS_PICOCLI_SBOM("my-quarkus-picocli-container"),
     NONE("NO_CONTAINER");

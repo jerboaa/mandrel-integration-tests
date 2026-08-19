@@ -39,6 +39,8 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.net.UnknownHostException;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.FileVisitResult;
@@ -65,6 +67,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import static java.nio.charset.StandardCharsets.US_ASCII;
 import static java.nio.charset.StandardCharsets.UTF_8;
@@ -835,16 +838,110 @@ public class Commands {
         return -1;
     }
 
-    public static boolean searchLogLines(Pattern p, File processLog, Charset charset) throws IOException {
-        try (Scanner sc = new Scanner(processLog, charset)) {
-            while (sc.hasNextLine()) {
-                final Matcher m = p.matcher(sc.nextLine());
-                if (m.matches()) {
-                    return true;
+    public static boolean searchLogLines(Pattern pattern, File processLog, Charset charset) throws IOException {
+        return searchLogLines(processLog, charset, pattern);
+    }
+
+    public static boolean searchLogLines(File processLog, Charset charset, Pattern... patterns) throws IOException {
+        if (patterns == null || patterns.length == 0) {
+            return false;
+        }
+        try (Stream<String> s = Files.lines(processLog.toPath(), charset)) {
+            return searchLogLines(s::iterator, patterns);
+        }
+    }
+
+    public static boolean searchLogLines(Iterable<String> lines, Pattern... patterns) {
+        if (patterns == null || patterns.length == 0) {
+            return false;
+        }
+        final boolean[] found = new boolean[patterns.length];
+        int foundCount = 0;
+        for (String line : lines) {
+            for (int i = 0; i < patterns.length; i++) {
+                if (!found[i]) {
+                    if (patterns[i].matcher(line).matches()) {
+                        found[i] = true;
+                        foundCount++;
+                        if (foundCount == patterns.length) {
+                            return true;
+                        }
+                    }
                 }
             }
         }
         return false;
+    }
+
+    public static boolean searchLogLines(File processLog, String blockStartContains, int blockSizeLines, Charset charset, Pattern... patterns) throws IOException {
+        return searchLogLines(processLog, blockStartContains, blockSizeLines, 1, charset, patterns);
+    }
+
+    /**
+     * @param blockStartContains - which string does the line at the start of a block contain
+     * @param blockSizeLines - how many lines is the block to search long
+     * @param blocksToTry - how many blocks to try to find and search before giving up
+     * <p>
+     * Mind that if the blockSizeLines is big enough to hit the body of a following block,
+     * you can get a pattern match from that following block.
+     */
+    public static boolean searchLogLines(File processLog, String blockStartContains, int blockSizeLines, int blocksToTry, Charset charset, Pattern... patterns) throws IOException {
+        if (blockSizeLines <= 0 || blocksToTry <= 0) {
+            return false;
+        }
+        if (patterns == null || patterns.length == 0) {
+            return false;
+        }
+        try (BufferedReader reader = Files.newBufferedReader(processLog.toPath(), charset)) {
+            String line;
+            int blocksTried = 0;
+            while ((line = reader.readLine()) != null) {
+                if (line.contains(blockStartContains)) {
+                    final List<String> space = new ArrayList<>(blockSizeLines);
+                    int linesRead = 0;
+                    while (linesRead < blockSizeLines && (line = reader.readLine()) != null) {
+                        space.add(line);
+                        linesRead++;
+                    }
+                    if (searchLogLines(space, patterns)) {
+                        return true;
+                    }
+                    if (line == null) {
+                        return false;
+                    }
+                    blocksTried++;
+                    if (blocksTried >= blocksToTry) {
+                        return false;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * @param bytesAtTheEnd - big file, interesting data at the very end, we search only last n bytes.
+     * Note the beginning of the block might have a malformed UTF symbol.
+     */
+    public static boolean searchLogLines(File processLog, int bytesAtTheEnd, Charset charset, Pattern... patterns) throws IOException {
+        if (patterns == null || patterns.length == 0) {
+            return false;
+        }
+        try (FileChannel channel = FileChannel.open(processLog.toPath(), StandardOpenOption.READ)) {
+            final long fileSize = channel.size();
+            final int btr = (int) (Math.min(bytesAtTheEnd, fileSize));
+            if (btr <= 0) {
+                return false;
+            }
+            channel.position(fileSize - btr);
+            final ByteBuffer buffer = ByteBuffer.allocate(btr);
+            while (buffer.hasRemaining() && channel.read(buffer) > 0) {
+                //no-op
+            }
+            buffer.flip();
+            // decode might eat partial UTF symbols at the beginning, not important here
+            return searchLogLines(charset.decode(buffer).toString().lines()::iterator, patterns);
+        }
     }
 
     public static class PerfRecord {
@@ -1326,5 +1423,19 @@ public class Commands {
             }
         }
         return true;
+    }
+
+    public static void appendFileToFile(File src, File dst) throws IOException {
+        try (FileChannel sourceChannel = FileChannel.open(src.toPath(), StandardOpenOption.READ);
+                FileChannel targetChannel = FileChannel.open(dst.toPath(),
+                        StandardOpenOption.CREATE,
+                        StandardOpenOption.WRITE,
+                        StandardOpenOption.APPEND)) {
+            final long s = sourceChannel.size();
+            long transferred = 0;
+            while (transferred < s) {
+                transferred += sourceChannel.transferTo(transferred, s - transferred, targetChannel);
+            }
+        }
     }
 }
