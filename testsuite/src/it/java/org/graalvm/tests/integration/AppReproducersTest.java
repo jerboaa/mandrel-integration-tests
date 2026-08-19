@@ -483,6 +483,10 @@ public class AppReproducersTest {
             expected.add("libnet.a");
             expected.add("libnio.a");
             expected.add("libzip.a");
+            if (getVersion(inContainer).compareTo(Version.parse("25.3")) >= 0) {
+                // The added support for the Dual Pivot Quicksort intrinsics in GraalVM 25.3 require this library
+                expected.add("libsimdsort.a");
+            }
             if (getVersion(inContainer).compareTo(Version.parse("24.2")) >= 0) {
                 expected.add("libsvm_container.a");
             }
