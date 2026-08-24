@@ -946,6 +946,11 @@ public class AppReproducersTest {
         final String cn = testInfo.getTestClass().get().getCanonicalName();
         final String mn = testInfo.getTestMethod().get().getName();
         final boolean inContainer = app.runtimeContainer != ContainerNames.NONE;
+        // The Maven build and the JVM run use the local `javac`/`java`, which must support the
+        // X25519MLKEM768 hybrid KEM (JDK 25.0.5+). @IfMandrelVersion only checks the native-image
+        // builder's JDK, so the Mandrel builder can be JDK 25.0.5 based while the local JDK is older.
+        // In that case fall back to GraalVM/Mandrel's JDK; adjustPath so the `java` run picks it up too.
+        final Map<String, String> env = graalvmHomeEnvIfLocalJDKOlderThan("25.0.5", inContainer, true);
         final Pattern runCompleted = Pattern.compile(".*Test passed\\.\\s*$");
         final String serverBlockStarts = "Consuming ServerHello handshake message";
         final Pattern serverKEMused = Pattern.compile("\\s*\"named group\"\\s*:\\s*X25519MLKEM768\\s*$");
@@ -966,7 +971,7 @@ public class AppReproducersTest {
                 }
             }
             Files.createDirectories(Paths.get(appDir.getAbsolutePath() + File.separator + "logs"));
-            builderRoutine(app, report, cn, mn, appDir, processLog);
+            builderRoutine(app, report, cn, mn, appDir, processLog, env);
             if (inContainer) {
                 final Map<String, String> errors = new HashMap<>();
                 for (String base : RUNTIME_IMAGE_BASE) {
@@ -1000,7 +1005,7 @@ public class AppReproducersTest {
             } else {
                 LOGGER.info("Running on JVM...");
                 List<String> cmd = getRunCommand(app.buildAndRunCmds.runCommands[0]);
-                process = runCommand(cmd, appDir, jvmRunLog, app);
+                process = runCommand(cmd, appDir, jvmRunLog, app, null, env);
                 assertNotNull(process, "JVM run failed to start. Check " + getLogsDir(cn, mn) + File.separator + jvmRunLog.getName());
                 process.waitFor(10, TimeUnit.SECONDS);
                 Logs.appendln(report, appDir.getAbsolutePath());
@@ -1079,6 +1084,31 @@ public class AppReproducersTest {
     }
 
     /**
+     * When the local JDK is older than {@code minLocalJDK} (e.g. "21" or "25.0.5"), returns an environment map that
+     * points JAVA_HOME (and, if {@code adjustPath} is true, PATH) at GRAALVM_HOME so that the Maven
+     * build (and plain {@code java} runs, when {@code adjustPath} is true) use the GraalVM/Mandrel
+     * JDK instead of the incompatible local one. Returns {@code null} when running in a container or
+     * when the local JDK already satisfies the requirement, so callers can pass it through unchanged.
+     */
+    private static Map<String, String> graalvmHomeEnvIfLocalJDKOlderThan(String minLocalJDK, boolean inContainer, boolean adjustPath) {
+        final Runtime.Version localJDK = Runtime.version();
+        if (inContainer || localJDK.compareToIgnoreOptional(Runtime.Version.parse(minLocalJDK)) >= 0) {
+            return null;
+        }
+        final String graalvmHome = System.getenv("GRAALVM_HOME");
+        assertNotNull(graalvmHome, "Local JDK " + localJDK + " is older than the required JDK " + minLocalJDK +
+                ", so GRAALVM_HOME must be set to a compatible GraalVM/Mandrel JDK to run this test.");
+        LOGGER.info("Local JDK " + localJDK + " is older than the required JDK " + minLocalJDK +
+                "; falling back to GRAALVM_HOME = " + graalvmHome);
+        final Map<String, String> env = new HashMap<>();
+        env.put("JAVA_HOME", graalvmHome);
+        if (adjustPath) {
+            env.put("PATH", graalvmHome + File.separator + "bin" + File.pathSeparator + System.getenv("PATH"));
+        }
+        return env;
+    }
+
+    /**
      * https://github.com/oracle/graal/issues/9939
      * System.getProperties() fails when called from a virtual thread
      */
@@ -1091,16 +1121,10 @@ public class AppReproducersTest {
         final String cn = testInfo.getTestClass().get().getCanonicalName();
         final String mn = testInfo.getTestMethod().get().getName();
         final boolean inContainer = app.runtimeContainer != ContainerNames.NONE;
-        Map<String, String> env = null;
-        // Linux/Mac only for now when not run in a container and on a JDK < 21 (e.g. 17)
-        Runtime.Version version = Runtime.version();
-        if (version.feature() < 21 && !inContainer) {
-            LOGGER.info("Running with JDK version " + version.feature() + ". Compiling using GraalVM/Mandrel instead.");
-            env = new HashMap<>();
-            String javaHome = System.getenv("GRAALVM_HOME");
-            LOGGER.info("Running maven build with JAVA_HOME = " + javaHome);
-            env.put("JAVA_HOME", javaHome);
-        }
+        // When run on a JDK < 21 (e.g. 17) outside a container, compile using GraalVM/Mandrel's JDK
+        // instead. Only the Maven build needs it here (the app is run as a native binary), so no PATH
+        // adjustment is required.
+        final Map<String, String> env = graalvmHomeEnvIfLocalJDKOlderThan("21", inContainer, false);
         final Pattern p = Pattern.compile(".*=== RESULT: true true true true true true ===.*");
         try {
             // Cleanup
